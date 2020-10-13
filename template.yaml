@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  example-lambda-sns
+
+  Example CloudFormation template to subscribe a lambda to an SNS Topic.
+Parameters:
+  ExistingSecurityGroups:
+    Type: "List<AWS::EC2::SecurityGroup::Id>"
+    Default: sg-1ce91f66
+
+Resources:
+  lambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+              - "lambda.amazonaws.com"
+        Version: 2012-10-17
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Effect: Allow
+                Resource: 'arn:aws:logs:*:*:*'
+              - Action:
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:ListStackResources'
+                Effect: Allow
+                Resource: '*'
+              - Action:
+                  - 'elasticache:Describe*'
+                Effect: Allow
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:DescribeNetworkInterfaces'
+                  - 'ec2:DetachNetworkInterface'
+                  - 'ec2:DeleteNetworkInterface'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: '*'
+            Version: 2012-10-17
+  SNSTopicIOT:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 'sns-topic-iot'
+      TopicName: !Sub 'sns-topic-iot'
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt IOTEventsFunction.Arn
+
+  SNSTopicWeek:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 'sns-topic-week'
+      TopicName: !Sub 'sns-topic-week'
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt WeeklyEventFunction.Arn
+
+  SNSDestinationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 'sns-destination-topic'
+      TopicName: !Sub 'sns-destination-topic'
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ElasticacheSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Elasticache Security Group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '6379'
+          ToPort: '6379'
+          SourceSecurityGroupName: !Ref InstanceSecurityGroup
+
+  AllSecurityGroups:
+    Type: Custom::Split
+    Properties:
+      ServiceToken: !GetAtt AppendItemToListFunction.Arn
+      List:
+        Ref: ExistingSecurityGroups
+      AppendedItem: !GetAtt ElasticacheSecurityGroup.GroupId
+
+  AppendItemToListFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt lambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          var response = require('cfn-response');
+          exports.handler = function(event, context) {
+               var responseData = {Value: event.ResourceProperties.List};
+               responseData.Value.push(event.ResourceProperties.AppendedItem);
+               response.send(event, context, response.SUCCESS, responseData);
+            };
+      Runtime: nodejs12.x
+
+  ElastiCacheCluster:
+    Type: "AWS::ElastiCache::CacheCluster"
+    Properties:
+      CacheNodeType: "cache.t2.micro"
+      Engine: "redis"
+      NumCacheNodes: "1"
+      VpcSecurityGroupIds: !GetAtt AllSecurityGroups.Value
+
+  IOTEventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello_world/
+      Handler: lambda_code.lambda_handler
+      Role:
+        Fn::GetAtt: [ "lambdaExecutionRole", "Arn" ]
+      Environment:
+        Variables:
+          Redis_host:
+            Fn::GetAtt: ["ElastiCacheCluster","RedisEndpoint.Address"]
+          sns_topic: !Ref SNSDestinationTopic
+      VpcConfig:
+        SecurityGroupIds: !GetAtt AllSecurityGroups.Value
+        SubnetIds:
+          - subnet-d365d28b
+      Runtime: python3.6
+
+  WeeklyEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello_world/
+      Handler: lambda_code_events.lambda_handler
+      Role:
+        Fn::GetAtt: [ "lambdaExecutionRole", "Arn" ]
+      Environment:
+        Variables:
+          Redis_host:
+            Fn::GetAtt: ["ElastiCacheCluster","RedisEndpoint.Address"]
+      VpcConfig:
+        SecurityGroupIds: !GetAtt AllSecurityGroups.Value
+        SubnetIds:
+          - subnet-d365d28b
+      Runtime: python3.6
+
+  IOTFunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref IOTEventsFunction
+      Principal: sns.amazonaws.com
+
+  WeeklyEventFunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref WeeklyEventFunction
+      Principal: sns.amazonaws.com
+
+  EventTopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    Properties:
+      Topics:
+        - !Ref SNSTopicIOT
+        - !Ref SNSTopicWeek
+        - !Ref SNSDestinationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: 'sns:Publish'
+            Resource: !Ref SNSTopicIOT
+            Principal:
+              AWS: '*'
+            Condition:
+              ArnLike:
+                AWS:SourceArn: !Sub 'arn:aws:*:*:${AWS::AccountId}:*'
+
+Outputs:
+  redisHost:
+    Description: "ARN of the lambda IAM role"
+    Value:
+      Fn::GetAtt: ["ElastiCacheCluster","RedisEndpoint.Address"]

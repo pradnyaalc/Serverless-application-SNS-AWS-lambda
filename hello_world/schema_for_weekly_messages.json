@@ -1,0 +1,35 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema",
+    "type": "object",
+    "title": "Event messages Schema",
+    "description": "The schema to validate the incoming event messages",
+    "required": [
+        "moduleid",
+        "timestamp",
+        "attempts"
+    ],
+    "properties": {
+        "moduleid": {
+            "type": "string",
+            "description": "the unique identifier of a module",
+            "examples": [
+                "module153XYZ"
+            ]
+        },
+        "timestamp": {
+            "type": "integer",
+            "description": "time at which the message was generated",
+            "examples": [
+                1602468796
+            ]
+        },
+        "attempts": {
+            "type": "integer",
+            "description": "the cumulative count of attempted message transmissions since the module was reset",
+            "examples": [
+                5
+            ]
+        }
+    },
+    "additionalProperties": true
+}
